@@ -22,8 +22,11 @@ def replace_key(old,new,data,name=''):
     old_chunks = [bytes([old[i]]) for i in key_map]
     new_chunks = [bytes([new[i]]) for i in key_map]
     data =  replace_chunks(old_chunks, new_chunks, data,name)
-    
-    if 'ARCH' in os.environ and  os.environ['ARCH'] == '-arm64':
+    arch = os.getenv('ARCH') or 'x86'
+    arch = arch.replace('-', '')
+    if arch == 'arm64':
+        old_chunks = [old[i:i+4] for i in range(0, len(old), 4)]
+        new_chunks = [new[i:i+4] for i in range(0, len(new), 4)]
         old_bytes = old_chunks[4] + old_chunks[5] + old_chunks[2] + old_chunks[0] + old_chunks[1] + old_chunks[6] + old_chunks[7]
         new_bytes = new_chunks[4] + new_chunks[5] + new_chunks[2] + new_chunks[0] + new_chunks[1] + new_chunks[6] + new_chunks[7]
         if old_bytes in data:
@@ -279,13 +282,26 @@ def patch_kernel(data:bytes,key_dict):
     else:
         raise Exception('unknown kernel format')
 
+def patch_loader(loader_file):
+    try:
+        from package import check_install_package
+        check_install_package(['pyelftools'])
+        from loader.patch_loader import patch_loader as do_patch_loader
+        arch = os.getenv('ARCH') or 'x86'
+        arch = arch.replace('-', '')
+        do_patch_loader(loader_file,loader_file,arch)
+    except ImportError as e:
+        print(e)
+        print("loader module import failed. cannot run patch_loader.py")
+        
 def patch_squashfs(path,key_dict):
     for root, dirs, files in os.walk(path):
-        for file in files:
-            if file =='loader':
-                continue
-            file = os.path.join(root,file)
+        for _file in files:
+            file = os.path.join(root,_file)
             if os.path.isfile(file):
+                if _file =='loader':
+                    patch_loader(file)
+                    continue
                 data = open(file,'rb').read()
                 for old_public_key,new_public_key in key_dict.items():
                     _data = replace_key(old_public_key,new_public_key,data,file)

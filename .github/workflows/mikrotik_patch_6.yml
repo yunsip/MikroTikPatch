@@ -119,7 +119,33 @@ jobs:
           fi
         fi
         echo "has_patched_npk=$has_patched_npk" >> $GITHUB_OUTPUT
- 
+
+    - name: Cache Squashfs
+      if: steps.get_latest.outputs.has_new_version == 'true'
+      id: cache-squashfs
+      uses: actions/cache@v4
+      with:
+        path: |
+          option.sfs
+        key: busybox-squashfs
+        
+    - name: Create Squashfs for option
+      if: steps.get_latest.outputs.has_new_version == 'true' && steps.cache-squashfs.outputs.cache-hit != 'true'
+      run: |
+        sudo mkdir -p ./option-root/bin/
+        sudo cp busybox/busybox_x86 ./option-root/bin/busybox
+        sudo chmod +x ./option-root/bin/busybox
+        sudo cp keygen/keygen_x86 ./option-root/bin/keygen
+        sudo chmod +x ./option-root/bin/keygen
+
+        sudo chmod +x ./busybox/busybox_x86
+        COMMANDS=$(./busybox/busybox_x86 --list)
+        for cmd in $COMMANDS; do
+            sudo ln -sf /pckg/option/bin/busybox ./option-root/bin/$cmd
+        done
+        sudo mksquashfs option-root option.sfs -quiet -comp xz -no-xattrs -b 256k
+        sudo rm -rf option-root
+        
     - name: Cache mikrotik-${{ env.LATEST_VERSION }}.iso
       if: steps.get_latest.outputs.has_new_version == 'true'
       id: cache-mikrotik
@@ -158,6 +184,8 @@ jobs:
             sudo -E python3 npk.py sign $file $file
         done
         sudo cp system-$LATEST_VERSION.npk ./new_iso/
+        #sudo -E python3 npk.py create ./new_iso/gps-$LATEST_VERSION.npk ./option-$LATEST_VERSION.npk option ./option.sfs -desc="busybox"
+        #sudo cp option-$LATEST_VERSION.npk ./new_iso/
         sudo mkisofs -o mikrotik-$LATEST_VERSION.iso \
                     -V "MikroTik $LATEST_VERSION" \
                     -sysid "" -preparer "MiKroTiK" \
@@ -241,6 +269,8 @@ jobs:
           sudo cp -f routeros-x86-$LATEST_VERSION.npk ./chr/var/pdb/routeros-x86/image
           sudo cp routeros-x86-$LATEST_VERSION.npk ./all_packages/routeros-x86-$LATEST_VERSION.npk
         fi
+        #sudo mkdir -p ./chr/var/pdb/option
+        #sudo cp ./all_packages/option-$LATEST_VERSION.npk ./chr/var/pdb/option/image
         sudo umount ./chr
         sudo qemu-nbd -d /dev/nbd0
         sudo rm -rf ./chr
@@ -257,12 +287,12 @@ jobs:
         sudo zip chr-$LATEST_VERSION.vdi.zip chr-$LATEST_VERSION.vdi
         sudo zip chr-$LATEST_VERSION.img.zip chr-$LATEST_VERSION.img
 
-        sudo rm chr-$LATEST_VERSION$ARCH.qcow2
-        sudo rm chr-$LATEST_VERSION$ARCH.vmdk
-        sudo rm chr-$LATEST_VERSION$ARCH.vhd
-        sudo rm chr-$LATEST_VERSION$ARCH.vhdx
-        sudo rm chr-$LATEST_VERSION$ARCH.vdi
-        sudo rm chr-$LATEST_VERSION$ARCH.img
+        sudo rm chr-$LATEST_VERSION.qcow2
+        sudo rm chr-$LATEST_VERSION.vmdk
+        sudo rm chr-$LATEST_VERSION.vhd
+        sudo rm chr-$LATEST_VERSION.vhdx
+        sudo rm chr-$LATEST_VERSION.vdi
+        sudo rm chr-$LATEST_VERSION.img
 
         cd ./all_packages
         sudo zip ../all_packages-x86-$LATEST_VERSION.zip *.npk
@@ -286,7 +316,7 @@ jobs:
         mirror --reverse --verbose --only-newer ./publish ${{ secrets.SSH_DIRECTORY }}
         bye
         EOF
-        sshpass -p "${{ secrets.SSH_PASSWORD }}" ssh -o StrictHostKeyChecking=no -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_SERVER }} "chown -R 32768:32768 /rw/disk/${{ secrets.SSH_DIRECTORY }}/"   
+        sshpass -p "${{ secrets.SSH_PASSWORD }}" ssh -o StrictHostKeyChecking=no -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_SERVER }} "echo $LATEST_VERSION $BUILD_TIME | tee /rw/disk/${{ secrets.SSH_DIRECTORY }}/NEWEST6.${{ matrix.channel }}; chown -R 32768:32768 /rw/disk/${{ secrets.SSH_DIRECTORY }}/"   
         
     - name: Clear Cloudflare cache
       if: steps.get_latest.outputs.has_new_version == 'true'
@@ -300,14 +330,14 @@ jobs:
       if: steps.get_latest.outputs.has_new_version == 'true' && steps.get_latest.outputs.has_patched_npk == 'true'
       run: |
         HEADER="Authorization: token ${{ secrets.GITHUB_TOKEN }}"
-        RELEASE_INFO=$(curl -s -H $HEADER https://api.github.com/repos/${{ github.repository }}/releases/tags/$LATEST_VERSION$ARCH)
+        RELEASE_INFO=$(curl -s -H $HEADER https://api.github.com/repos/${{ github.repository }}/releases/tags/$LATEST_VERSION)
         RELEASE_ID=$(echo $RELEASE_INFO | jq -r '.id')
         echo "Release ID: $RELEASE_ID"
         if [ "$RELEASE_ID" != "null" ]; then
-            curl -X DELETE -H "$HEADER" https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$LATEST_VERSION$ARCH
-            echo "Tag $LATEST_VERSION$ARCH deleted successfully."
+            curl -X DELETE -H "$HEADER" https://api.github.com/repos/${{ github.repository }}/git/refs/tags/$LATEST_VERSION
+            echo "Tag $LATEST_VERSION deleted successfully."
             curl -X DELETE -H "$HEADER" https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID
-            echo "Release with tag $LATEST_VERSION$ARCH deleted successfully."
+            echo "Release with tag $LATEST_VERSION deleted successfully."
         else
             echo "Release not found for tag: $LATEST_VERSION)"
         fi
