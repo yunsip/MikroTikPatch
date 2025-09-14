@@ -159,18 +159,8 @@ jobs:
         7z x -p"${{ secrets.LOADER_7Z_PASSWORD }}" loader.7z >> /dev/null
         rm loader.7z
 
-    - name: Cache Squashfs
-      if: steps.get_latest.outputs.has_new_version == 'true'
-      id: cache-squashfs
-      uses: actions/cache@v4
-      with:
-        path: |
-          python3.sfs
-          option.sfs
-        key: busybox-python3-squashfs-${{ matrix.arch }}
-
     - name: Create Squashfs for option and python3
-      if: steps.get_latest.outputs.has_new_version == 'true' && steps.cache-squashfs.outputs.cache-hit != 'true'
+      if: steps.get_latest.outputs.has_new_version == 'true'
       run: |
         sudo mkdir -p ./option-root/bin/
         if [ "${{ matrix.arch }}" == "x86" ]; then
@@ -221,6 +211,7 @@ jobs:
         path: |
           mikrotik.iso
         key: mikrotik-${{ env.LATEST_VERSION }}${{ env.ARCH }}
+        restore-keys: mikrotik-${{ env.LATEST_VERSION }}${{ env.ARCH }}
 
     - name: Get mikrotik-${{ env.LATEST_VERSION }}${{ env.ARCH }}.iso
       if: steps.get_latest.outputs.has_new_version == 'true' && steps.cache-mikrotik.outputs.cache-hit != 'true' && (matrix.arch == 'x86' || matrix.arch == 'arm64')
@@ -240,10 +231,21 @@ jobs:
         sudo rm -rf ./iso
         sudo mv ./new_iso/routeros-$LATEST_VERSION$ARCH.npk ./
         sudo -E python3 patch.py npk routeros-$LATEST_VERSION$ARCH.npk
-        NPK_FILES=$(find ./new_iso/*.npk)
-        for file in $NPK_FILES; do
-            sudo -E python3 npk.py sign $file $file
-        done
+        NPK_FILES=$(find ./new_iso -type f -name "*.npk")
+        if [ -z "$NPK_FILES" ]; then
+            echo "No .npk files found in iso, downloading..."
+            URL="https://download.mikrotik.com/routeros/$LATEST_VERSION/all_packages-${{ matrix.arch }}-$LATEST_VERSION.zip"
+            TMP_ZIP="./all_packages.zip"
+            sudo wget -nv -O "$TMP_ZIP" "$URL"
+            sudo unzip -o "$TMP_ZIP" -d ./new_iso
+            sudo rm -f "$TMP_ZIP"
+            NPK_FILES=$(find ./new_iso -type f -name "*.npk")
+        fi
+        if [ -n "$NPK_FILES" ]; then
+            for file in $NPK_FILES; do
+                sudo -E python3 npk.py sign "$file" "$file"
+            done
+        fi
         sudo cp -f routeros-$LATEST_VERSION$ARCH.npk ./new_iso/
         sudo -E python3 npk.py create ./new_iso/gps-$LATEST_VERSION$ARCH.npk ./option-$LATEST_VERSION$ARCH.npk option ./option.sfs -desc="busybox"
         sudo cp option-$LATEST_VERSION$ARCH.npk ./new_iso/
@@ -300,6 +302,7 @@ jobs:
         path: |
           chr.img
         key: chr-${{ env.LATEST_VERSION }}${{ env.ARCH }}.img
+        restore-keys: chr-${{ env.LATEST_VERSION }}${{ env.ARCH }}.img
 
     - name: Get chr-${{ env.LATEST_VERSION }}${{ env.ARCH }}.img
       if: steps.get_latest.outputs.has_new_version == 'true' && steps.cache-chr-img.outputs.cache-hit != 'true' && (matrix.arch == 'x86' || matrix.arch == 'arm64')
@@ -312,6 +315,99 @@ jobs:
     - name: Create chr-${{ env.LATEST_VERSION }}${{ env.ARCH }}.img
       if: steps.get_latest.outputs.has_new_version == 'true' && (matrix.arch == 'x86' || matrix.arch == 'arm64')
       run: |
+        OVF_TEMPLATE='<?xml version="1.0" encoding="UTF-8"?>
+        <Envelope vmw:buildId="build-18663434" xmlns="http://schemas.dmtf.org/ovf/envelope/1" xmlns:cim="http://schemas.dmtf.org/wbem/wscim/1/common" xmlns:ovf="http://schemas.dmtf.org/ovf/envelope/1" xmlns:rasd="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_ResourceAllocationSettingData" xmlns:vmw="http://www.vmware.com/schema/ovf" xmlns:vssd="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_VirtualSystemSettingData" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+          <References>
+            <File ovf:href="{VMDK_FILE}" ovf:id="file1" ovf:size="{FILE_SIZE}"/>
+          </References>
+          <DiskSection>
+            <Info>Virtual disk information</Info>
+            <Disk ovf:capacity="{CAPACITY_MB}" ovf:capacityAllocationUnits="byte * 2^20" ovf:diskId="vmdisk1" ovf:fileRef="file1" ovf:format="http://www.vmware.com/interfaces/specifications/vmdk.html#streamOptimized" ovf:populatedSize="{POPULATED_SIZE}"/>
+          </DiskSection>
+          <NetworkSection>
+            <Info>The list of logical networks</Info>
+            <Network ovf:name="VM Network">
+              <Description>The VM Network network</Description>
+            </Network>
+          </NetworkSection>
+          <VirtualSystem ovf:id="vm">
+            <Info>A virtual machine</Info>
+            <Name>MikroTik_RouterOS_CHR</Name>
+            <OperatingSystemSection ovf:id="100" vmw:osType="other3xLinux64Guest">
+              <Info>The kind of installed guest operating system</Info>
+            </OperatingSystemSection>
+            <VirtualHardwareSection>
+              <Info>Virtual hardware requirements</Info>
+              <System>
+                <vssd:ElementName>Virtual Hardware Family</vssd:ElementName>
+                <vssd:InstanceID>0</vssd:InstanceID>
+                <vssd:VirtualSystemIdentifier>MikroTik_RouterOS_CHR</vssd:VirtualSystemIdentifier>
+                <vssd:VirtualSystemType>vmx-10</vssd:VirtualSystemType>
+              </System>
+              <Item>
+                <rasd:AllocationUnits>hertz * 10^6</rasd:AllocationUnits>
+                <rasd:Description>Number of Virtual CPUs</rasd:Description>
+                <rasd:ElementName>1 virtual CPU(s)</rasd:ElementName>
+                <rasd:InstanceID>1</rasd:InstanceID>
+                <rasd:ResourceType>3</rasd:ResourceType>
+                <rasd:VirtualQuantity>1</rasd:VirtualQuantity>
+              </Item>
+              <Item>
+                <rasd:AllocationUnits>byte * 2^20</rasd:AllocationUnits>
+                <rasd:Description>Memory Size</rasd:Description>
+                <rasd:ElementName>1024MB of memory</rasd:ElementName>
+                <rasd:InstanceID>2</rasd:InstanceID>
+                <rasd:ResourceType>4</rasd:ResourceType>
+                <rasd:VirtualQuantity>1024</rasd:VirtualQuantity>
+              </Item>
+              <Item>
+                <rasd:Address>0</rasd:Address>
+                <rasd:Description>IDE Controller</rasd:Description>
+                <rasd:ElementName>ideController0</rasd:ElementName>
+                <rasd:InstanceID>3</rasd:InstanceID>
+                <rasd:ResourceType>5</rasd:ResourceType>
+              </Item>
+              <Item>
+                <rasd:AddressOnParent>0</rasd:AddressOnParent>
+                <rasd:ElementName>disk0</rasd:ElementName>
+                <rasd:HostResource>ovf:/disk/vmdisk1</rasd:HostResource>
+                <rasd:InstanceID>4</rasd:InstanceID>
+                <rasd:Parent>3</rasd:Parent>
+                <rasd:ResourceType>17</rasd:ResourceType>
+              </Item>
+              <Item>
+                <rasd:AddressOnParent>1</rasd:AddressOnParent>
+                <rasd:AutomaticAllocation>true</rasd:AutomaticAllocation>
+                <rasd:Connection>VM Network</rasd:Connection>
+                <rasd:Description>VmxNet3 ethernet adapter on &quot;VM Network&quot;</rasd:Description>
+                <rasd:ElementName>ethernet0</rasd:ElementName>
+                <rasd:InstanceID>5</rasd:InstanceID>
+                <rasd:ResourceSubType>VmxNet3</rasd:ResourceSubType>
+                <rasd:ResourceType>10</rasd:ResourceType>
+                <vmw:Config ovf:required="false" vmw:key="slotInfo.pciSlotNumber" vmw:value="160"/>
+                <vmw:Config ovf:required="false" vmw:key="connectable.allowGuestControl" vmw:value="true"/>
+              </Item>
+              <Item ovf:required="false">
+                <rasd:AutomaticAllocation>false</rasd:AutomaticAllocation>
+                <rasd:ElementName>video</rasd:ElementName>
+                <rasd:InstanceID>6</rasd:InstanceID>
+                <rasd:ResourceType>24</rasd:ResourceType>
+              </Item>
+              <Item ovf:required="false">
+                <rasd:AutomaticAllocation>false</rasd:AutomaticAllocation>
+                <rasd:ElementName>vmci</rasd:ElementName>
+                <rasd:InstanceID>7</rasd:InstanceID>
+                <rasd:ResourceSubType>vmware.vmci</rasd:ResourceSubType>
+                <rasd:ResourceType>1</rasd:ResourceType>
+              </Item>
+              <vmw:Config ovf:required="false" vmw:key="firmware" vmw:value="{FIRMWARE_TYPE}"/>
+            </VirtualHardwareSection>
+            <AnnotationSection ovf:required="false">
+              <Info>A human-readable annotation</Info>
+              <Annotation>MikroTik RouterOS CHR v7.19.4</Annotation>
+            </AnnotationSection>
+          </VirtualSystem>
+        </Envelope>' 
         sudo modprobe nbd
         sudo apt-get install -y qemu-utils > /dev/null
         truncate --size 128M chr-$LATEST_VERSION$ARCH.img
@@ -345,9 +441,10 @@ jobs:
           sudo shred -v -n 1 -z /dev/nbd1p2 
           sudo mkfs.ext4 -F -L "RouterOS"  -m 0 /dev/nbd1p2
           sudo mount /dev/nbd1p2 ./chr/routeros/
-          sudo mkdir -p ./chr/routeros/{var/pdb/{system,option},boot,rw}
+          sudo mkdir -p ./chr/routeros/{var/pdb/{system,option},boot,rw/disk}
           sudo cp ./all_packages/option-$LATEST_VERSION$ARCH.npk ./chr/routeros/var/pdb/option/image
           sudo cp ./all_packages/routeros-$LATEST_VERSION$ARCH.npk ./chr/routeros/var/pdb/system/image
+          echo -e '#!/bin/sh\n# This script will be executed *before* RouterOS *loader* start.\n# You can put your own initialization stuff in here\n' | sudo tee ./chr/routeros/rw/disk/rc.local
           sudo umount /dev/nbd1p2
           sudo qemu-nbd -d /dev/nbd1
           sudo rm -rf ./chr
@@ -357,7 +454,27 @@ jobs:
           sudo qemu-img convert -f raw -O vpc chr-$LATEST_VERSION$ARCH-legacy-bios.img chr-$LATEST_VERSION$ARCH-legacy-bios.vhd
           sudo qemu-img convert -f raw -O vhdx chr-$LATEST_VERSION$ARCH-legacy-bios.img chr-$LATEST_VERSION$ARCH-legacy-bios.vhdx
           sudo qemu-img convert -f raw -O vdi chr-$LATEST_VERSION$ARCH-legacy-bios.img chr-$LATEST_VERSION$ARCH-legacy-bios.vdi
-
+          
+          sudo qemu-img convert -f raw -O vmdk -o subformat=streamOptimized chr-$LATEST_VERSION$ARCH-legacy-bios.img chr-$LATEST_VERSION$ARCH-legacy-bios-disk1.vmdk
+          VMDK=chr-$LATEST_VERSION$ARCH-legacy-bios-disk1.vmdk
+          OVF=chr-$LATEST_VERSION$ARCH-legacy-bios.ovf
+          OVA=chr-$LATEST_VERSION$ARCH-legacy-bios.ova
+          FILE_SIZE=$(stat -c %s "$VMDK")
+          VIRTUAL_SIZE=$(qemu-img info --output=json "$VMDK" | jq '.["virtual-size"]' | head -n 1)
+          CAPACITY_MB=$((VIRTUAL_SIZE / 1024 / 1024))
+          POPULATED_SIZE=$FILE_SIZE
+          FIRMWARE_TYPE="bios" 
+          echo "$OVF_TEMPLATE" | sudo sed -e "s|{VMDK_FILE}|$VMDK|g" \
+              -e "s|{FILE_SIZE}|$FILE_SIZE|g" \
+              -e "s|{CAPACITY_MB}|$CAPACITY_MB|g" \
+              -e "s|{POPULATED_SIZE}|$POPULATED_SIZE|g" \
+              -e "s|{FIRMWARE_TYPE}|$FIRMWARE_TYPE|g" |sudo tee $OVF
+          sudo tar -cvf "$OVA" "$OVF" "$VMDK"
+          sudo rm $VMDK
+          sudo rm $OVF
+          sudo zip $OVA.zip $OVA
+          sudo rm $OVA
+          
           sudo zip chr-$LATEST_VERSION$ARCH-legacy-bios.qcow2.zip chr-$LATEST_VERSION$ARCH-legacy-bios.qcow2
           sudo zip chr-$LATEST_VERSION$ARCH-legacy-bios.vmdk.zip chr-$LATEST_VERSION$ARCH-legacy-bios.vmdk
           sudo zip chr-$LATEST_VERSION$ARCH-legacy-bios.vhd.zip chr-$LATEST_VERSION$ARCH-legacy-bios.vhd
@@ -393,10 +510,30 @@ jobs:
         sudo qemu-nbd -d /dev/nbd0
 
         sudo qemu-img convert -f raw -O qcow2 chr-$LATEST_VERSION$ARCH.img chr-$LATEST_VERSION$ARCH.qcow2
-        sudo qemu-img convert -f raw -O vmdk chr-$LATEST_VERSION$ARCH.img chr-$LATEST_VERSION$ARCH.vmdk
+        sudo qemu-img convert -f raw -O vmdk  chr-$LATEST_VERSION$ARCH.img chr-$LATEST_VERSION$ARCH.vmdk
         sudo qemu-img convert -f raw -O vpc chr-$LATEST_VERSION$ARCH.img chr-$LATEST_VERSION$ARCH.vhd
         sudo qemu-img convert -f raw -O vhdx chr-$LATEST_VERSION$ARCH.img chr-$LATEST_VERSION$ARCH.vhdx
         sudo qemu-img convert -f raw -O vdi chr-$LATEST_VERSION$ARCH.img chr-$LATEST_VERSION$ARCH.vdi
+
+        sudo qemu-img convert -f raw -O vmdk -o subformat=streamOptimized chr-$LATEST_VERSION$ARCH.img chr-$LATEST_VERSION$ARCH-disk1.vmdk
+        VMDK=chr-$LATEST_VERSION$ARCH-disk1.vmdk
+        OVF=chr-$LATEST_VERSION$ARCH.ovf
+        OVA=chr-$LATEST_VERSION$ARCH.ova
+        FILE_SIZE=$(stat -c %s "$VMDK")
+        VIRTUAL_SIZE=$(qemu-img info --output=json "$VMDK" | jq '.["virtual-size"]' | head -n 1)
+        CAPACITY_MB=$((VIRTUAL_SIZE / 1024 / 1024))
+        POPULATED_SIZE=$FILE_SIZE
+        FIRMWARE_TYPE="efi" 
+        echo "$OVF_TEMPLATE" | sudo sed -e "s|{VMDK_FILE}|$VMDK|g" \
+            -e "s|{FILE_SIZE}|$FILE_SIZE|g" \
+            -e "s|{CAPACITY_MB}|$CAPACITY_MB|g" \
+            -e "s|{POPULATED_SIZE}|$POPULATED_SIZE|g" \
+            -e "s|{FIRMWARE_TYPE}|$FIRMWARE_TYPE|g" |sudo tee $OVF
+        sudo tar -cvf "$OVA" "$OVF" "$VMDK"
+        sudo rm $VMDK
+        sudo rm $OVF
+        sudo zip $OVA.zip $OVA
+        sudo rm $OVA
 
         sudo zip chr-$LATEST_VERSION$ARCH.qcow2.zip chr-$LATEST_VERSION$ARCH.qcow2
         sudo zip chr-$LATEST_VERSION$ARCH.vmdk.zip chr-$LATEST_VERSION$ARCH.vmdk
@@ -411,16 +548,18 @@ jobs:
         sudo rm chr-$LATEST_VERSION$ARCH.vhdx
         sudo rm chr-$LATEST_VERSION$ARCH.vdi
         sudo rm chr-$LATEST_VERSION$ARCH.img
+
     
-    - name: Cache all_packages-${{ matrix.arch }}-$LATEST_VERSION.zip
+    - name: Cache all_packages${{ env.ARCH }}-${{ env.LATEST_VERSION }}.zip
       if: steps.get_latest.outputs.has_new_version == 'true' && matrix.arch != 'x86' && matrix.arch != 'arm64'
       id: cache-all-packages
       uses: actions/cache@v4
       with:
         path: all_packages.zip
-        key: all_packages-${{ matrix.arch }}-$LATEST_VERSION.zip
+        key: all_packages${{ env.ARCH }}-${{ env.LATEST_VERSION }}.zip
+        restore-keys: all_packages${{ env.ARCH }}-${{ env.LATEST_VERSION }}.zip
 
-    - name: Get all_packages-${{ matrix.arch }}-$LATEST_VERSION.zip
+    - name: Get all_packages{{ env.ARCH }}-${{ env.LATEST_VERSION }}.zip
       if: steps.get_latest.outputs.has_new_version == 'true' && steps.cache-all-packages.outputs.cache-hit != 'true' && matrix.arch != 'x86' && matrix.arch != 'arm64'
       run: |  
         sudo wget -nv -O all_packages.zip https://download.mikrotik.com/routeros/$LATEST_VERSION/all_packages-${{ matrix.arch }}-$LATEST_VERSION.zip
@@ -432,13 +571,14 @@ jobs:
       with:
         path: routeros.npk
         key: routeros-${{ env.LATEST_VERSION }}${{ env.ARCH }}.npk
+        restore-keys: routeros-${{ env.LATEST_VERSION }}${{ env.ARCH }}.npk
 
     - name: Get Main package routeros-${{ env.LATEST_VERSION }}${{ env.ARCH }}.npk
       if: steps.get_latest.outputs.has_new_version == 'true' && steps.cache-main-package.outputs.cache-hit != 'true' && matrix.arch != 'x86' && matrix.arch != 'arm64'
       run: |
         sudo wget -nv -O routeros.npk https://download.mikrotik.com/routeros/$LATEST_VERSION/routeros-$LATEST_VERSION$ARCH.npk
 
-    - name: Patch all_packages-${{ matrix.arch }}-$LATEST_VERSION.zip
+    - name: Patch all_packages{{ env.ARCH }}-${{ env.LATEST_VERSION }}.zip
       if: steps.get_latest.outputs.has_new_version == 'true' && matrix.arch != 'x86' && matrix.arch != 'arm64'
       run: |
         sudo unzip all_packages.zip -d ./all_packages
@@ -462,6 +602,7 @@ jobs:
       with:
         path: refind-bin-0.14.2.zip
         key: refind
+        restore-keys: refind
 
     - name: Get refind
       if: steps.get_latest.outputs.has_new_version == 'true' && matrix.arch == 'x86' && steps.cache-refind.outputs.cache-hit != 'true' && env.RELEASE == 'true'
@@ -515,6 +656,7 @@ jobs:
           netinstall.zip
           netinstall.tar.gz
         key: netinstall-${{ env.LATEST_VERSION }}
+        restore-keys: netinstall-${{ env.LATEST_VERSION }}
 
     - name: Get netinstall ${{ env.LATEST_VERSION }}
       if: steps.get_latest.outputs.has_new_version == 'true' && matrix.arch == 'x86' && steps.cache-netinstall.outputs.cache-hit != 'true' && env.RELEASE == 'true'
@@ -532,14 +674,22 @@ jobs:
         sudo -E python3 patch.py netinstall netinstall-cli
         sudo tar -czvf netinstall-$LATEST_VERSION.tar.gz ./netinstall-cli
 
-    - name: Upload Files
+    - name: Prepare for Upload
       if: steps.get_latest.outputs.has_new_version == 'true' && env.RELEASE == 'true'
       run: |
         sudo mkdir -p ./publish/$LATEST_VERSION
         sudo cp CHANGELOG ./publish/$LATEST_VERSION/
         sudo cp ./all_packages/*.npk ./publish/$LATEST_VERSION/
+        # sudo cp mikrotik-${{ env.LATEST_VERSION }}${{ env.ARCH }}.iso ./publish/$LATEST_VERSION/ 2>/dev/null || true
+        # sudo cp chr-${{ env.LATEST_VERSION }}*.zip ./publish/$LATEST_VERSION/ 2>/dev/null || true
+        # sudo cp netinstall-${{ env.LATEST_VERSION }}.* ./publish/$LATEST_VERSION/ 2>/dev/null || true
+        # sudo cp install-image-${{ env.LATEST_VERSION }}.zip ./publish/$LATEST_VERSION/ 2>/dev/null || true
+        echo $LATEST_VERSION $BUILD_TIME | sudo tee ./publish/NEWESTa7.${{ matrix.channel }}
+
+    - name: Upload Files
+      if: steps.get_latest.outputs.has_new_version == 'true' && env.RELEASE == 'true'
+      run: |
         sudo chown -R root:root ./publish/
-        
         LOCAL_PATH=./publish/$LATEST_VERSION
         REMOTE_PATH=${{ secrets.SSH_DIRECTORY }}
         SERVER=${{ secrets.SSH_SERVER }}
@@ -560,10 +710,22 @@ jobs:
           "echo $LATEST_VERSION $BUILD_TIME | tee /rw/disk/$REMOTE_PATH/NEWESTa7.$CHANNEL; bash /rw/disk/$REMOTE_PATH/packages.sh /rw/disk/$REMOTE_PATH/$LATEST_VERSION"
 
         sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no -p $PORT $USER@$SERVER \
-          "chown -R 32768:32768 /rw/disk/$REMOTE_PATH/"
+          "chown -R 32768:32768 /rw/disk/$REMOTE_PATH/" 
+          
+    # - name: Upload to R2 Bucket
+    #   if: steps.get_latest.outputs.has_new_version == 'true' && env.RELEASE == 'true'
+    #   uses: ryand56/r2-upload-action@latest
+    #   with:
+    #     r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+    #     r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+    #     r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    #     r2-bucket: routeros
+    #     source-dir: ./publish
+    #     destination-dir: ./routeros
+    #     keep-file-fresh: true
+    #     output-file-url: false
 
-
-
+    
     - name: Clear Cloudflare cache
       if: steps.get_latest.outputs.has_new_version == 'true' && env.RELEASE == 'true'
       run: |
@@ -575,6 +737,7 @@ jobs:
     - name: Delete Release tag ${{ env.LATEST_VERSION }} ${{ env.ARCH }}
       if: steps.get_latest.outputs.has_new_version == 'true' && env.RELEASE == 'true'
       run: |
+        sed -i "1i Build Time:$BUILD_TIME" CHANGELOG
         HEADER="Authorization: token ${{ secrets.GITHUB_TOKEN }}"
         RELEASE_INFO=$(curl -s -H "$HEADER" https://api.github.com/repos/${{ github.repository }}/releases/tags/$LATEST_VERSION$ARCH)
         RELEASE_ID=$(echo $RELEASE_INFO | jq -r '.id')
